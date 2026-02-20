@@ -2,6 +2,11 @@
 
 Replace track images of the certain rhythm game to dark ones
 
+## Requirements
+
+- Android NDK >= r28
+- Phone with zygisk enabled
+
 ## How to use?
 
 - Clone the repository
