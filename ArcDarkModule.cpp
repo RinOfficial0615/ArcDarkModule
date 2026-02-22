@@ -4,6 +4,10 @@
 #include <array>
 #include <unordered_map>
 #include <string_view>
+#include <cstring>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -22,9 +26,27 @@ using zygisk::ServerSpecializeArgs;
 
 constexpr const char *kRuntimeClass = "java/lang/Runtime";
 
+static bool IsModuleDisabled(Api *api) {
+    if (!api) return false;
+    const int dirfd = api->getModuleDir();
+    if (dirfd < 0) return false;
+
+    auto exists = [&](const char *name) -> bool {
+        const int fd = openat(dirfd, name, O_RDONLY | O_CLOEXEC);
+        if (fd < 0) return false;
+        close(fd);
+        return true;
+    };
+
+    const bool disabled = exists("disable") || exists("remove");
+    close(dirfd);
+    return disabled;
+}
+
 static const std::set<std::string_view> target_pkgs = {
     "moe.inf.arc",
     "moe.low.arc",
+    "moe.low.mes", // My custom package
 };
 
 static const std::unordered_map<std::string_view, std::string_view> asset_replacements = {
@@ -103,7 +125,21 @@ public:
         this->env = env;
     }
 
+    void preServerSpecialize([[maybe_unused]] ServerSpecializeArgs *args) override {
+        if (IsModuleDisabled(api)) {
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
+        api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+    }
+
     void preAppSpecialize(AppSpecializeArgs *args) override {
+        if (IsModuleDisabled(api)) {
+            api->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
+            return;
+        }
+
         bool enable_module = false;
 
         const char* package_name = env->GetStringUTFChars(args->nice_name, nullptr);
