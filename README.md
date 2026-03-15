@@ -19,3 +19,8 @@ Replace track images of the certain rhythm game to dark ones
 
 - Create `<module dir>/disable` or `<module dir>/remove` to disable module logic at startup.
 - Delete the flag file to re-enable on next app/process start.
+- Or simply configure this module in your root mamanger.
+
+## Acknowledgements
+
+[LSPlt](https://github.com/LSPosed/LSPlt)

@@ -87,14 +87,24 @@ JNINativeMethod jniMethodHooks[1] = {
     "nativeLoad", 
     "(Ljava/lang/String;Ljava/lang/ClassLoader;Ljava/lang/Class;)Ljava/lang/String;", 
     reinterpret_cast<void *>(+[] [[clang::no_stack_protector]] (JNIEnv *env, jclass ignored, jstring javaFileName, jobject javaLoader, jobject caller) -> jstring {
-        auto ret = reinterpret_cast<jstring(*)(JNIEnv*, jclass, jstring, jobject, jobject)>(jniMethodHooks[0].fnPtr)(env, ignored, javaFileName, javaLoader, caller);
-        if (ret != nullptr) return ret;
-
+#define ORIG() reinterpret_cast<jstring(*)(JNIEnv*, jclass, jstring, jobject, jobject)>(jniMethodHooks[0].fnPtr)(env, ignored, javaFileName, javaLoader, caller);
+        
+        if (!javaFileName) return ORIG();
         auto lib_name = env->GetStringUTFChars(javaFileName, nullptr);
         if (lib_name == nullptr)
-            return ret;
-        
-        if (strstr(lib_name, "libcocos2dcpp.so") != nullptr) {
+            return ORIG();
+
+        bool is_target = std::strstr(lib_name, "libcocos2dcpp.so") != nullptr;
+        if (is_target) {
+            jclass cls = env->FindClass(kRuntimeClass);
+            env->RegisterNatives(cls, jniMethodHooks, 1);
+            env->DeleteLocalRef(cls);
+        }
+
+        auto ret = ORIG();
+        if (ret != nullptr) return ret; // nativeLoad failed
+
+        if (is_target) {
             dev_t dev = 0;
             ino_t ino = 0;
             for (auto &m : lsplt::MapInfo::Scan()) {
@@ -109,12 +119,12 @@ JNINativeMethod jniMethodHooks[1] = {
                                 reinterpret_cast<void*>(AAssetManager_open_hook), 
                                 reinterpret_cast<void**>(&AAssetManager_open_backup));
             lsplt::CommitHook();
-
-            env->RegisterNatives(env->FindClass(kRuntimeClass), jniMethodHooks, 1);
         }
         
         env->ReleaseStringUTFChars(javaFileName, lib_name);
         return ret;
+
+#undef ORIG
     })
 };
 
