@@ -1,10 +1,7 @@
-#include <set>
-#include <vector>
-#include <memory>
-#include <array>
-#include <unordered_map>
-#include <string_view>
+#include <unordered_set>
 #include <cstring>
+#include <string_view>
+#include <atomic>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -13,11 +10,11 @@
 #include <sys/types.h>
 #include <sys/sysmacros.h>
 #include <android/asset_manager.h>
-// #define LOG_TAG "ArcDarkModule"
-// #include "android/log_macros.h"
+
+#define LOG_TAG "ArcDarkModule"
+#include "android/log_macros.h"
 
 #include "zygisk.hpp"
-
 #include "lsplt/include/lsplt.hpp"
 
 using zygisk::Api;
@@ -25,6 +22,38 @@ using zygisk::AppSpecializeArgs;
 using zygisk::ServerSpecializeArgs;
 
 constexpr const char *kRuntimeClass = "java/lang/Runtime";
+
+class ScopedUtfChars {
+public:
+    ScopedUtfChars(JNIEnv *env, jstring str)
+        : env_(env), str_(str), chars_(nullptr) {
+        if (env_ && str_) {
+            chars_ = env_->GetStringUTFChars(str_, nullptr);
+        }
+    }
+
+    ~ScopedUtfChars() {
+        if (env_ && str_ && chars_) {
+            env_->ReleaseStringUTFChars(str_, chars_);
+        }
+    }
+
+    ScopedUtfChars(const ScopedUtfChars &) = delete;
+    ScopedUtfChars &operator=(const ScopedUtfChars &) = delete;
+
+    const char *get() const {
+        return chars_;
+    }
+
+    explicit operator bool() const {
+        return chars_ != nullptr;
+    }
+
+private:
+    JNIEnv *env_;
+    jstring str_;
+    const char *chars_;
+};
 
 static bool IsModuleDisabled(Api *api) {
     if (!api) return false;
@@ -43,44 +72,75 @@ static bool IsModuleDisabled(Api *api) {
     return disabled;
 }
 
-static const std::set<std::string_view> target_pkgs = {
+static const std::unordered_set<std::string_view> target_pkgs = {
     "moe.inf.arc",
     "moe.low.arc",
     "moe.low.mes", // My custom package
 };
 
-static const std::unordered_map<std::string_view, std::string_view> asset_replacements = {
-    { "track.png", "track_dark.png" },
-    { "track_rei.png", "track_dark.png" },
-    { "track_extralane_light.png", "track_extralane_dark.png" },
-    // { "track_finale.png", "track_dark.png" },
-    // { "track_arcana.png", "track_dark.png" },
-    // { "track_black.png", "track_dark.png" },
-    // { "track_pentiment.png", "track_dark.png" },
-    // { "track_tempestissimo.png", "track_dark.png" },
-};
+
+dev_t target_dev = 0;
+ino_t target_ino = 0;
+
+std::atomic<AAsset*> target_songlist_asset{nullptr};
 
 typedef AAsset* (*AAssetManager_open_t)(AAssetManager*, const char*, int);
 static AAssetManager_open_t AAssetManager_open_backup = nullptr;
 
 static AAsset* AAssetManager_open_hook(AAssetManager *mgr, const char *filename, int mode) {
+    auto result = AAssetManager_open_backup(mgr, filename, mode);
     if (filename) {
-        std::string_view file_sv(filename);
-
-        auto last_slash = file_sv.find_last_of('/'); // We can always find the last slash, so no more checks
-        std::string_view base_name = file_sv.substr(last_slash + 1);
-
-        auto it = asset_replacements.find(base_name);
-        if (it != asset_replacements.end()) {
-            std::string new_path{};
-            if (last_slash != std::string_view::npos) {
-                new_path.append(file_sv.substr(0, last_slash + 1));
-            }
-            new_path.append(it->second);
-            return AAssetManager_open_backup(mgr, new_path.c_str(), mode);
+        // ALOGI("AAssetManager_open_hook: %s", filename);
+        if (std::strcmp(filename, "songs/songlist") == 0) {
+            target_songlist_asset.store(result, std::memory_order_relaxed);
         }
     }
-    return AAssetManager_open_backup(mgr, filename, mode);
+    return result;
+}
+
+typedef int (*AAsset_read_t)(AAsset*, void*, size_t);
+static AAsset_read_t AAsset_read_backup = nullptr;
+
+// The songlist will only be read for 2 times, at the startup screen.
+// The first read is for the actual songlist, and the second read is to hash the songlist.
+// So we only need to modify the first read, and simply unhook.
+static int AAsset_read_hook(AAsset *asset, void *buf, size_t count) {
+    auto result = AAsset_read_backup(asset, buf, count);
+    if (result <= 0) return result;
+
+    if (target_songlist_asset.load(std::memory_order_relaxed) == asset) {
+        char *ptr = static_cast<char *>(buf);
+        char *current = ptr;
+        char *end = ptr + result;
+
+        while (current < end - 8) {
+            void *found = std::memchr(current, '"', end - current - 8);
+            if (!found) break;
+
+            char *pos = static_cast<char *>(found);
+
+            if (std::memcmp(pos, "\"side\": ", 8) == 0) {
+                char *val_ptr = pos + 8;
+                if (*val_ptr == '0' || *val_ptr == '2') {
+                    *val_ptr = '1';
+                    current = val_ptr + 1;
+                } else {
+                    current = pos + 1;
+                }
+            } else {
+                current = pos + 1;
+            }
+        }
+
+        lsplt::RegisterHook(target_dev, target_ino, "AAssetManager_open", 
+                            reinterpret_cast<void*>(AAssetManager_open_backup), 
+                            nullptr);
+        lsplt::RegisterHook(target_dev, target_ino, "AAsset_read", 
+                            reinterpret_cast<void*>(AAsset_read_backup),
+                            nullptr);
+        lsplt::CommitHook();
+    }
+    return result;
 }
 
 JNINativeMethod jniMethodHooks[1] = {
@@ -90,11 +150,10 @@ JNINativeMethod jniMethodHooks[1] = {
 #define ORIG() reinterpret_cast<jstring(*)(JNIEnv*, jclass, jstring, jobject, jobject)>(jniMethodHooks[0].fnPtr)(env, ignored, javaFileName, javaLoader, caller);
         
         if (!javaFileName) return ORIG();
-        auto lib_name = env->GetStringUTFChars(javaFileName, nullptr);
-        if (lib_name == nullptr)
-            return ORIG();
+        ScopedUtfChars lib_name(env, javaFileName);
+        if (!lib_name) return ORIG();
 
-        bool is_target = std::strstr(lib_name, "libcocos2dcpp.so") != nullptr;
+        bool is_target = std::strstr(lib_name.get(), "libcocos2dcpp.so") != nullptr;
         if (is_target) {
             jclass cls = env->FindClass(kRuntimeClass);
             env->RegisterNatives(cls, jniMethodHooks, 1);
@@ -105,23 +164,23 @@ JNINativeMethod jniMethodHooks[1] = {
         if (ret != nullptr) return ret; // nativeLoad failed
 
         if (is_target) {
-            dev_t dev = 0;
-            ino_t ino = 0;
             for (auto &m : lsplt::MapInfo::Scan()) {
                 if (m.path.ends_with("libcocos2dcpp.so")) {
-                    dev = m.dev;
-                    ino = m.inode;
+                    target_dev = m.dev;
+                    target_ino = m.inode;
                     break;
                 }
             }
 
-            lsplt::RegisterHook(dev, ino, "AAssetManager_open", 
+            lsplt::RegisterHook(target_dev, target_ino, "AAssetManager_open", 
                                 reinterpret_cast<void*>(AAssetManager_open_hook), 
                                 reinterpret_cast<void**>(&AAssetManager_open_backup));
+            lsplt::RegisterHook(target_dev, target_ino, "AAsset_read", 
+                                reinterpret_cast<void*>(AAsset_read_hook),
+                                reinterpret_cast<void**>(&AAsset_read_backup));
             lsplt::CommitHook();
         }
-        
-        env->ReleaseStringUTFChars(javaFileName, lib_name);
+
         return ret;
 
 #undef ORIG
@@ -152,12 +211,11 @@ public:
 
         bool enable_module = false;
 
-        const char* package_name = env->GetStringUTFChars(args->nice_name, nullptr);
+        ScopedUtfChars package_name(env, args->nice_name);
         if (package_name) {
-            if (target_pkgs.find(package_name) != target_pkgs.end()) {
+            if (target_pkgs.find(package_name.get()) != target_pkgs.end()) {
                 enable_module = true;
             }
-            env->ReleaseStringUTFChars(args->nice_name, package_name);
         }
         
         if (!enable_module) {
