@@ -121,7 +121,7 @@ static int AAsset_read_hook(AAsset *asset, void *buf, size_t count) {
 
             if (std::memcmp(pos, "\"side\": ", 8) == 0) {
                 char *val_ptr = pos + 8;
-                if (*val_ptr == '0' || *val_ptr == '2') {
+                if (*val_ptr == '0' || *val_ptr == '2' || *val_ptr == '3') {
                     *val_ptr = '1';
                     current = val_ptr + 1;
                 } else {
