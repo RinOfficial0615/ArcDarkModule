@@ -129,6 +129,7 @@ dev_t target_dev = 0;
 ino_t target_ino = 0;
 
 std::atomic<AAsset*> target_songlist_asset{nullptr};
+std::atomic<bool> songlist_modified{false};
 
 typedef AAsset* (*AAssetManager_open_t)(AAssetManager*, const char*, int);
 static AAssetManager_open_t AAssetManager_open_backup = nullptr;
@@ -147,14 +148,15 @@ static AAsset* AAssetManager_open_hook(AAssetManager *mgr, const char *filename,
 typedef int (*AAsset_read_t)(AAsset*, void*, size_t);
 static AAsset_read_t AAsset_read_backup = nullptr;
 
-// The songlist will only be read for 2 times, at the startup screen.
-// The first read is for the actual songlist, and the second read is to hash the songlist.
-// So we only need to modify the first read, and simply unhook.
+// The first songlist read supplies game data; later reads validate the original
+// asset. Keep the hook installed so other hook chains remain intact, but only
+// rewrite the first read.
 static int AAsset_read_hook(AAsset *asset, void *buf, size_t count) {
     auto result = AAsset_read_backup(asset, buf, count);
     if (result <= 0) return result;
 
-    if (target_songlist_asset.load(std::memory_order_relaxed) == asset) {
+    if (target_songlist_asset.load(std::memory_order_relaxed) == asset &&
+        !songlist_modified.exchange(true, std::memory_order_relaxed)) {
         char *ptr = static_cast<char *>(buf);
         char *current = ptr;
         char *end = ptr + result;
@@ -178,13 +180,6 @@ static int AAsset_read_hook(AAsset *asset, void *buf, size_t count) {
             }
         }
 
-        lsplt::RegisterHook(target_dev, target_ino, "AAssetManager_open", 
-                            reinterpret_cast<void*>(AAssetManager_open_backup), 
-                            nullptr);
-        lsplt::RegisterHook(target_dev, target_ino, "AAsset_read", 
-                            reinterpret_cast<void*>(AAsset_read_backup),
-                            nullptr);
-        lsplt::CommitHook();
     }
     return result;
 }

@@ -278,7 +278,16 @@ Copy-Item "scope.txt" -Destination "$TmpDir/"
 
 $ZipPath = "build/ArcDarkModule.zip"
 if (Test-Path $ZipPath) { Remove-Item $ZipPath }
-Compress-Archive -Path "$TmpDir\*" -DestinationPath $ZipPath
+$Tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+if (-not $Tar) {
+    Write-LogError "tar.exe is required to package the module"
+    exit 1
+}
+& $Tar.Source -a -c -f $ZipPath -C $TmpDir "module.prop" "scope.txt" "zygisk/arm64-v8a.so"
+if ($LASTEXITCODE -ne 0) {
+    Write-LogError "Failed to package module ZIP"
+    exit $LASTEXITCODE
+}
 
 Remove-Item -Recurse -Force $TmpDir
 Write-LogInfo "OK!"
