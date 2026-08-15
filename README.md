@@ -13,6 +13,7 @@ Replace track images of the certain rhythm game to dark ones
 - Optional: set `ANDROID_NDK_HOME` (or pass `--ndk-home`). If not set, script auto-detects from `ANDROID_SDK_ROOT` / `ANDROID_HOME`.
 - Open your powershell and run `.\build.ps1 --rel`
 - Push `.\build\ArcDarkModule.zip` to your phone and install it in your root manager
+- The packaged root `scope.txt` controls exact package names (one per line; blank and `#` lines are ignored). Use `--install` only when you explicitly want the script to push and install through `adb`/`ksud`.
 - Enjoy!
 
 ## Dynamic switch

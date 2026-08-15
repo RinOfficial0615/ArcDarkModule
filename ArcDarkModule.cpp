@@ -1,5 +1,7 @@
-#include <unordered_set>
+#include <array>
+#include <cctype>
 #include <cstring>
+#include <string>
 #include <string_view>
 #include <atomic>
 
@@ -72,11 +74,55 @@ static bool IsModuleDisabled(Api *api) {
     return disabled;
 }
 
-static const std::unordered_set<std::string_view> target_pkgs = {
-    "moe.inf.arc",
-    "moe.low.arc",
-    "moe.low.mes", // My custom package
-};
+static constexpr std::array<const char *, 3> kDefaultPackages = {
+    "moe.inf.arc", "moe.low.arc", "moe.low.mes"};
+
+static std::string TrimScope(std::string_view value) {
+    size_t begin = 0, end = value.size();
+    while (begin < end && std::isspace(static_cast<unsigned char>(value[begin]))) ++begin;
+    while (end > begin && std::isspace(static_cast<unsigned char>(value[end - 1]))) --end;
+    return std::string(value.substr(begin, end - begin));
+}
+
+static bool ScopeContains(std::string_view text, std::string_view package_name) {
+    size_t begin = 0;
+    while (begin <= text.size()) {
+        size_t end = text.find('\n', begin);
+        if (end == std::string_view::npos) end = text.size();
+        std::string line = TrimScope(text.substr(begin, end - begin));
+        if (const size_t comment = line.find('#'); comment != std::string::npos) {
+            line.resize(comment);
+            line = TrimScope(line);
+        }
+        if (!line.empty() && line == package_name) return true;
+        if (end == text.size()) break;
+        begin = end + 1;
+    }
+    return false;
+}
+
+static bool IsTargetPackage(Api *api, const char *package_name) {
+    if (!api || !package_name || package_name[0] == '\0') return false;
+    const int dirfd = api->getModuleDir();
+    if (dirfd < 0) return false;
+    char buffer[16 * 1024];
+    const int fd = openat(dirfd, "scope.txt", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        close(dirfd);
+        for (const char *fallback : kDefaultPackages)
+            if (std::string_view(package_name) == fallback) return true;
+        return false;
+    }
+    const ssize_t size = read(fd, buffer, sizeof(buffer));
+    close(fd);
+    close(dirfd);
+    if (size < 0) {
+        for (const char *fallback : kDefaultPackages)
+            if (std::string_view(package_name) == fallback) return true;
+        return false;
+    }
+    return ScopeContains(std::string_view(buffer, static_cast<size_t>(size)), package_name);
+}
 
 
 dev_t target_dev = 0;
@@ -213,7 +259,7 @@ public:
 
         ScopedUtfChars package_name(env, args->nice_name);
         if (package_name) {
-            if (target_pkgs.find(package_name.get()) != target_pkgs.end()) {
+            if (IsTargetPackage(api, package_name.get())) {
                 enable_module = true;
             }
         }

@@ -3,6 +3,7 @@ $ExtraCppFlags = ""
 $ExtraNdkFlags = ""
 $NdkHome = $env:ANDROID_NDK_HOME
 $NdkHomeSpecified = $false
+$Install = $false
 
 function Write-LogInfo([string]$msg) {
     Write-Host "[$([char]27)[32mINFO$([char]27)[0m] $msg"
@@ -113,6 +114,7 @@ Options:
     --cpp-build-flags <flags>   Additional compiler flags
     --ndk-build-flags <flags>   Additional ndk-build flags
     --ndk-home <path>           Use a specific Android NDK path
+    --install                   Push and install the built module with adb/ksud
     --help                      Show this help message
 "@
     exit 0
@@ -142,6 +144,10 @@ while ($i -lt $args.Length) {
             $NdkHome = $args[$i+1]
             $NdkHomeSpecified = $true
             $i += 2
+        }
+        "--install" {
+            $Install = $true
+            $i++
         }
         "--help" {
             Show-Help
@@ -268,6 +274,7 @@ New-Item -ItemType Directory -Path "$TmpDir/zygisk" | Out-Null
 
 Copy-Item "build/libs/arm64-v8a/libarc_dark.so" -Destination "$TmpDir/zygisk/arm64-v8a.so"
 Copy-Item "module.prop" -Destination "$TmpDir/"
+Copy-Item "scope.txt" -Destination "$TmpDir/"
 
 $ZipPath = "build/ArcDarkModule.zip"
 if (Test-Path $ZipPath) { Remove-Item $ZipPath }
@@ -275,3 +282,11 @@ Compress-Archive -Path "$TmpDir\*" -DestinationPath $ZipPath
 
 Remove-Item -Recurse -Force $TmpDir
 Write-LogInfo "OK!"
+
+if ($Install) {
+    Write-LogInfo "Installing ArcDarkModule because --install was specified"
+    & adb push build/ArcDarkModule.zip /data/local/tmp/ArcDarkModule.zip
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    & adb shell ksud module install /data/local/tmp/ArcDarkModule.zip
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
